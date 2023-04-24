@@ -2,3 +2,4 @@
 data
 #ignore .ipynb
 *.ipynb
+.ipynb_checkpoints
