@@ -36,10 +36,11 @@ lock = threading.Lock()
 
 # Define a flag to indicate when all messages have been consumed
 all_messages_consumed = False
-
+msg_queue = queue.Queue()
 # Define a function to read messages from a partition
 def consume_partition(partition):
     global all_messages_consumed
+    global msg_queue
     consumer = Consumer(conf)
     consumer.assign([TopicPartition('input-topic', partition)])
     while not all_messages_consumed:
@@ -57,10 +58,10 @@ def consume_partition(partition):
             message = json.loads(msg.value())
             # Get the data from the message
             data = message
-            # Add data to the queue
+            # Add data to the message queue
             with lock:
                 for num in data:
-                    queues[partition].put(num)
+                    queues[num % num_partitions].put(num)
         except KafkaException as e:
             print('Error while reading partition:', partition, e)
             break
@@ -68,6 +69,7 @@ def consume_partition(partition):
             print('Unexpected error while reading partition:', partition, e)
             break
     consumer.close()
+
 
 # Define a function to merge messages from all queues and write them to the output topic
 def merge_and_write(msg_queue):
@@ -78,10 +80,11 @@ def merge_and_write(msg_queue):
     while not all_messages_consumed:
         try:
             # Merge messages from all queues
+            # Merge messages from all queues
             with lock:
                 for q in queues:
                     while not q.empty():
-                        buffer.append(q.get())
+                        buffer.append(q.get()[1])
             # Write merged messages to output topic if buffer is full or time interval has passed
             if len(buffer) >= buffer_size or time.time() - last_flush_time >= time_interval:
                 buffer.sort()
@@ -102,7 +105,7 @@ for p in processes:
     p.start()
 
 # Start the merge-and-write process
-msg_queue = queue.Queue()
+
 merge_process = Process(target=merge_and_write, args=(msg_queue,))
 merge_process.start()
 
