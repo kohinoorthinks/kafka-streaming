@@ -1,6 +1,8 @@
 import json
-from concurrent.futures import ThreadPoolExecutor
-from confluent_kafka import Consumer, Producer, KafkaError
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import Process
+from confluent_kafka import Consumer,Producer, KafkaError
 
 class Partition:
     def __init__(self):
@@ -14,15 +16,18 @@ class Partition:
         self.max_num = num
         return True
 
-def consume_and_merge(partition):
-    consumer = Consumer({
-        'bootstrap.servers': bootstrap_servers,
-        'group.id': 'my-group',
-        'auto.offset.reset': 'earliest',
-        'partition.assignment.strategy': 'range',
-        'enable.auto.commit': True
-    })
-    consumer.assign([partition])
+def consume_and_merge(bootstrap_servers, input_topic, output_topic):
+    consumer_conf = {'bootstrap.servers': bootstrap_servers,
+                     'group.id': 'my-group',
+                     'auto.offset.reset': 'earliest',
+                     'enable.auto.commit': True}
+    consumer = Consumer(consumer_conf)
+    consumer.subscribe([input_topic])
+
+    producer_conf = {'bootstrap.servers': bootstrap_servers}
+    producer = Producer(producer_conf)
+
+    partitions = [Partition() for _ in range(10)]
 
     while True:
         msg = consumer.poll(1.0)
@@ -64,13 +69,13 @@ if __name__ == '__main__':
     bootstrap_servers = 'localhost:9092'
     input_topic = 'input-topic'
     output_topic = 'output-topic'
+    
+    num_processes = 10
+    processes = []
+    for i in range(num_processes):
+        p = multiprocessing.Process(target=consume_and_merge, args=(bootstrap_servers, input_topic, output_topic))
+        processes.append(p)
+        p.start()
 
-    partitions = [str(i) for i in range(10)]
-
-    # create a Kafka producer instance
-    producer_conf = {'bootstrap.servers': bootstrap_servers}
-    producer = Producer(producer_conf)
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        for partition in partitions:
-            executor.submit(consume_and_merge, partition)
+    for p in processes:
+        p.join()
