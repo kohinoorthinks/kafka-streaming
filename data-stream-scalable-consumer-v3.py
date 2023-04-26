@@ -1,8 +1,6 @@
+from confluent_kafka import Consumer, KafkaError, Producer
+from multiprocessing import Process, Queue
 import json
-import multiprocessing
-from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import Process
-from confluent_kafka import Consumer,Producer, KafkaError
 
 class Partition:
     def __init__(self):
@@ -16,19 +14,22 @@ class Partition:
         self.max_num = num
         return True
 
-def consume_and_merge(bootstrap_servers, input_topic, output_topic):
-    consumer_conf = {'bootstrap.servers': bootstrap_servers,
-                     'group.id': 'my-group',
-                     'auto.offset.reset': 'earliest',
-                     'enable.auto.commit': True}
-    consumer = Consumer(consumer_conf)
-    consumer.subscribe([input_topic])
+def consumer_process(queue):
+    # Create a Kafka consumer configuration
+    conf = {'bootstrap.servers': 'localhost:9092',
+            'group.id': 'my-group',
+            'auto.offset.reset': 'earliest',
+            'enable.auto.commit': True}
 
-    producer_conf = {'bootstrap.servers': bootstrap_servers}
-    producer = Producer(producer_conf)
+    # Create a Kafka consumer instance
+    consumer = Consumer(conf)
+    consumer.subscribe(['input-topic'])
 
+    # Create partitions
     partitions = [Partition() for _ in range(10)]
+    current_partition = 0
 
+    # Consume messages from all partitions
     while True:
         msg = consumer.poll(1.0)
 
@@ -41,41 +42,76 @@ def consume_and_merge(bootstrap_servers, input_topic, output_topic):
                 print('Error while consuming message: {}'.format(msg.error()))
             continue
 
+        # Deserialize the message from JSON
         message = json.loads(msg.value())
-        segment_id = message['segment_id']
-        data = message['data']
 
-        partition = partitions[(segment_id - 1) % 10]
+        # Get the data from the message
+        data = message
+
+        # Insert the data into the appropriate partition
+        partition = partitions[current_partition]
         for num in data:
             partition.insert(num)
+            current_partition = (current_partition + 1) % 10
 
-        # check if all partitions have data
+        # Check if all partitions have data
         if all(part.buffer for part in partitions):
-            # merge all partitions
+            # Merge all partitions
             merged = []
             for partition in partitions:
                 merged += partition.buffer
-            # sort the new incoming numbers with respect to the maximum number of each partition
-            merged.sort(key=lambda x: (x % 10, x))
-            # write to output topic
-            producer.produce(output_topic, key='merged', value=json.dumps(merged).encode())
-            # print merged data to console
-            print('Merged data:', merged)
+            # Send merged partition to main process
+            queue.put(merged)
 
-        producer.poll(0)
+# Create a Kafka producer configuration
+producer_conf = {'bootstrap.servers': 'localhost:9092'}
 
+# Create a Kafka producer instance
+producer = Producer(producer_conf)
 
-if __name__ == '__main__':
-    bootstrap_servers = 'localhost:9092'
-    input_topic = 'input-topic'
-    output_topic = 'output-topic'
-    
-    num_processes = 10
-    processes = []
-    for i in range(num_processes):
-        p = multiprocessing.Process(target=consume_and_merge, args=(bootstrap_servers, input_topic, output_topic))
-        processes.append(p)
-        p.start()
+# Create queues for communication between consumer processes and main process
+queues = [Queue() for _ in range(10)]
 
-    for p in processes:
-        p.join()
+# Start consumer processes
+consumer_processes = []
+for i in range(10):
+    p = Process(target=consumer_process, args=(queues[i],))
+    consumer_processes.append(p)
+    p.start()
+
+# Merge and sort data from all partitions as it becomes available
+merged_partitions = []
+while True:
+    # Get the next merged partition from the queue
+    merged_partition = None
+    for queue in queues:
+        if not queue.empty():
+            merged_partition = queue.get()
+            break
+    if merged_partition is None:
+        continue
+
+    # Add the merged partition to the list of merged partitions
+    merged_partitions.append(merged_partition)
+
+    # If all partitions have data, merge and sort all partitions
+    if len(merged_partitions) == 10:
+        merged = []
+        for partition in merged_partitions:
+            merged += partition
+        merged.sort()
+
+        # Write to output topic
+        producer.produce('output-topic', key='merged', value=' '.join(map(str, merged)))
+
+        # Print merged data to console
+        print('Merged data:', merged)
+
+        producer.flush()
+
+        # Reset list of merged partitions
+        merged_partitions = []
+
+# Join consumer processes
+for p in consumer_processes:
+    p.join()

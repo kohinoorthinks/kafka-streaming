@@ -65,13 +65,14 @@ while True:
     partition.add_segment(segment)
     
     # Create a message for the segment
-    message = {'segment_id': partition_id, 'data': segment}
+    #message = {segment}
     
     # Serialize the message to JSON
-    serialized_message = json.dumps(message).encode('utf-8')
+    #serialized_message = json.dumps(message).encode('utf-8')
     
     # Send the message to the Kafka topic
-    producer.produce(topic='input-topic', value=serialized_message, partition=partition.id, callback=delivery_report)
+    producer.produce(topic='input-topic', value=json.dumps(segment).encode('utf-8'), partition=partition.id, callback=delivery_report)
+
     
     # Flush the producer buffer to make sure the message is sent immediately
     producer.flush()
